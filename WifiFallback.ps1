@@ -327,6 +327,8 @@ function Read-Config {
         FailedRetryMinutes   = [Math]::Max(1, [int](Get-JsonValue $behaviorRaw 'failedRetryMinutes' 3))
         MaxAttemptsPerRun    = [Math]::Max(1, [int](Get-JsonValue $behaviorRaw 'maxAttemptsPerRun' 3))
         VerifyInternet       = (ConvertTo-BoolValue (Get-JsonValue $behaviorRaw 'verifyInternet' $false) $false)
+        VerifyUrl            = [string](Get-JsonValue $behaviorRaw 'verifyUrl' 'http://www.msftconnecttest.com/connecttest.txt')
+        VerifyExpect         = [string](Get-JsonValue $behaviorRaw 'verifyExpect' 'Microsoft Connect Test')
         VerifyHost           = [string](Get-JsonValue $behaviorRaw 'verifyHost' '223.5.5.5')
         VerifyPort           = [int](Get-JsonValue $behaviorRaw 'verifyPort' 443)
         OnConnectCommand     = [string](Get-JsonValue $behaviorRaw 'onConnectCommand' '')
@@ -730,7 +732,8 @@ function Get-NetworkPlan {
         $Current,
         $VisibleNetworks,
         [datetime]$Now,
-        [switch]$IgnoreSchedule
+        [switch]$IgnoreSchedule,
+        $CurrentInternet = $null
     )
 
     $scheduleInfo = Get-ScheduleInfo -Schedule $Config.Schedule -Now $Now
@@ -813,8 +816,24 @@ function Get-NetworkPlan {
         @($visibleCandidates + $hiddenCandidates)
     }
 
+    $currentNet = $null
+    foreach ($network in $Config.Networks) {
+        if ($network.Ssid -eq $Current.Ssid) { $currentNet = $network; break }
+    }
+
+    $currentUnusable = $Current.Connected -and $null -ne $currentNet -and
+        $Config.Behavior.VerifyInternet -and ($null -ne $CurrentInternet) -and (-not [bool]$CurrentInternet)
+    if ($currentUnusable) {
+        $candidates = @($candidates | Where-Object { $_.Net.Ssid -ne $Current.Ssid })
+    }
+
     if ($candidates.Count -eq 0) {
         $State.bestStreak = $null
+        if ($currentUnusable) {
+            return New-PlanResult -Reason 'portal-only' `
+                -Message ("当前 $($Current.Ssid) 需要网页认证/无外网，但列表中没有其他可用网络") `
+                -Schedule $scheduleInfo
+        }
         $message = if ($Current.Connected) {
             '当前连接不在候选列表内（可能信号不足或都处于失败冷却）'
         } else {
@@ -823,12 +842,14 @@ function Get-NetworkPlan {
         return New-PlanResult -Reason 'no-candidate' -Message $message -Schedule $scheduleInfo
     }
 
-    $currentNet = $null
-    foreach ($network in $Config.Networks) {
-        if ($network.Ssid -eq $Current.Ssid) { $currentNet = $network; break }
-    }
-
     $best = $candidates[0]
+
+    if ($currentUnusable) {
+        $State.bestStreak = $null
+        return New-PlanResult -Action 'connect' -Reason 'portal-fallback' `
+            -Message ("当前 $($Current.Ssid) 需要网页认证/无外网，降级尝试 $($best.Net.Ssid)") `
+            -Target $best.Net -Candidates $candidates -Schedule $scheduleInfo
+    }
 
     if ($Current.Connected -and $currentNet -and $currentNet.Priority -le $best.Net.Priority) {
         $State.bestStreak = $null
@@ -903,31 +924,142 @@ function Connect-ToNetwork {
     return $false
 }
 
-function Test-Internet {
-    param($Config)
-    $hostName = $Config.Behavior.VerifyHost
-    $port = [int]$Config.Behavior.VerifyPort
-    if ([string]::IsNullOrWhiteSpace($hostName) -or $port -le 0) { return $true }
-    $client = New-Object System.Net.Sockets.TcpClient
+function Resolve-PortalAddress {
+    param([string]$BaseUrl, [string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
     try {
-        $task = $client.ConnectAsync($hostName, $port)
-        if (-not $task.Wait(4000)) { return $false }
-        return $client.Connected
+        $base = New-Object System.Uri($BaseUrl)
+        $resolved = New-Object System.Uri($base, $Value)
+        return $resolved.AbsoluteUri
     } catch {
-        return $false
-    } finally {
-        $client.Dispose()
+        return $Value
     }
 }
 
+function Get-PortalAddressFromContent {
+    param([string]$BaseUrl, [string]$Location, [string]$Content)
+    if (-not [string]::IsNullOrWhiteSpace($Location)) {
+        return Resolve-PortalAddress -BaseUrl $BaseUrl -Value $Location
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Content)) {
+        $match = [regex]::Match($Content, '(?is)<form[^>]+action\s*=\s*["''](?<value>[^"'']+)')
+        if ($match.Success) {
+            return Resolve-PortalAddress -BaseUrl $BaseUrl -Value $match.Groups['value'].Value
+        }
+        $match = [regex]::Match($Content, '(?is)<base[^>]+href\s*=\s*["''](?<value>[^"'']+)')
+        if ($match.Success) {
+            return Resolve-PortalAddress -BaseUrl $BaseUrl -Value $match.Groups['value'].Value
+        }
+    }
+    return ''
+}
+
+function Test-Connectivity {
+    param($Config)
+    $ProgressPreference = 'SilentlyContinue'
+    $url = [string]$Config.Behavior.VerifyUrl
+    if ([string]::IsNullOrWhiteSpace($url)) {
+        $url = 'http://www.msftconnecttest.com/connecttest.txt'
+    }
+    $expect = [string]$Config.Behavior.VerifyExpect
+    $result = [pscustomobject]@{
+        CheckedAt     = (Get-Date).ToString('o')
+        Url           = $url
+        Internet      = $false
+        CaptivePortal = $false
+        PortalUrl     = ''
+        Detail        = ''
+    }
+
+    $response = $null
+    $failure = ''
+    try {
+        $response = Invoke-WebRequest -Uri $url -UseBasicParsing -MaximumRedirection 0 -TimeoutSec 8 -ErrorAction Stop
+    } catch {
+        $failure = $_.Exception.Message
+        $webResponse = $_.Exception.Response
+        if ($null -ne $webResponse) {
+            $code = 0
+            try { $code = [int]$webResponse.StatusCode } catch { }
+            $location = ''
+            try {
+                $locationHeader = $webResponse.Headers['Location']
+                if ($locationHeader) {
+                    if ($locationHeader -is [array]) { $location = [string]$locationHeader[0] }
+                    else { $location = [string]$locationHeader }
+                }
+            } catch { }
+            if ($code -eq 511 -or $code -eq 301 -or $code -eq 302 -or $code -eq 303 -or $code -eq 307 -or $code -eq 308 -or -not [string]::IsNullOrWhiteSpace($location)) {
+                $result.CaptivePortal = $true
+                $result.PortalUrl = Get-PortalAddressFromContent -BaseUrl $url -Location $location -Content ''
+                if ([string]::IsNullOrWhiteSpace($result.PortalUrl)) { $result.PortalUrl = $url }
+                $detail = "HTTP $code"
+                if (-not [string]::IsNullOrWhiteSpace($location)) { $detail += " -> $location" }
+                $result.Detail = $detail
+                return $result
+            }
+            $result.Detail = "HTTP $code"
+        } else {
+            $result.Detail = $failure
+        }
+    }
+
+    if ($null -ne $response) {
+        $code = [int]$response.StatusCode
+        $content = [string]$response.Content
+        if ($code -ge 300 -and $code -lt 400) {
+            $result.CaptivePortal = $true
+            $result.PortalUrl = Get-PortalAddressFromContent -BaseUrl $url -Location '' -Content $content
+            if ([string]::IsNullOrWhiteSpace($result.PortalUrl)) { $result.PortalUrl = $url }
+            $result.Detail = "HTTP $code"
+            return $result
+        }
+
+        $matchesExpectation = $false
+        if (-not [string]::IsNullOrWhiteSpace($expect)) {
+            $matchesExpectation = $content -match [regex]::Escape($expect)
+        }
+        if ($code -eq 204 -or ($code -ge 200 -and $code -lt 300 -and [string]::IsNullOrWhiteSpace($expect)) -or $matchesExpectation) {
+            $result.Internet = $true
+            $result.Detail = "HTTP $code"
+            return $result
+        }
+
+        $result.CaptivePortal = $true
+        $result.PortalUrl = Get-PortalAddressFromContent -BaseUrl $url -Location '' -Content $content
+        if ([string]::IsNullOrWhiteSpace($result.PortalUrl)) { $result.PortalUrl = $url }
+        $result.Detail = "HTTP $code 内容不匹配"
+        return $result
+    }
+
+    # HTTP 探测失败时再试一个 HTTPS 站点，避免单个域名被校园网拦截造成误判
+    try {
+        $https = Invoke-WebRequest -Uri 'https://www.baidu.com' -UseBasicParsing -TimeoutSec 6 -ErrorAction Stop
+        if ([int]$https.StatusCode -ge 200 -and [int]$https.StatusCode -lt 400) {
+            $result.Internet = $true
+            $result.Detail = 'HTTPS fallback OK'
+            return $result
+        }
+    } catch { }
+    $result.Detail = $failure
+    return $result
+}
+
+function Test-Internet {
+    param($Config)
+    return (Test-Connectivity -Config $Config).Internet
+}
+
 function Invoke-OnConnectCommand {
-    param($Config, $Net)
+    param($Config, $Net, [string]$PortalUrl = '')
     $command = [string]$Config.Behavior.OnConnectCommand
     if ([string]::IsNullOrWhiteSpace($command)) { return }
 
     Write-Log '执行连接后命令（校园网 Portal 认证等）...'
     $env:WIFI_SSID = [string]$Net.Ssid
     $env:WIFI_PROFILE = [string]$Net.Profile
+    $env:WIFI_PORTAL_URL = [string]$PortalUrl
+    Push-Location $script:Root
     try {
         $output = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $command 2>&1
         foreach ($line in @($output)) {
@@ -938,8 +1070,10 @@ function Invoke-OnConnectCommand {
     } catch {
         Write-Log ('连接后命令执行失败：' + $_.Exception.Message) 'WARN'
     } finally {
+        Pop-Location
         Remove-Item Env:\WIFI_SSID -ErrorAction SilentlyContinue
         Remove-Item Env:\WIFI_PROFILE -ErrorAction SilentlyContinue
+        Remove-Item Env:\WIFI_PORTAL_URL -ErrorAction SilentlyContinue
     }
 }
 
@@ -958,6 +1092,41 @@ function Invoke-ConnectCandidates {
 
         $ok = Connect-ToNetwork -Net $network -InterfaceName $interfaceName -TimeoutSec $Config.Behavior.ConnectTimeoutSec
         if ($ok) {
+            Write-Log ("{0} 已关联（优先级 {1}）" -f $network.Ssid, $network.Priority)
+
+            if ($Config.Behavior.PostConnectDelaySec -gt 0) {
+                Start-Sleep -Seconds $Config.Behavior.PostConnectDelaySec
+            }
+
+            if ($Config.Behavior.VerifyInternet) {
+                $connectivity = Test-Connectivity -Config $Config
+                if ($connectivity.CaptivePortal) {
+                    Write-Log ("检测到网页认证：{0}" -f $connectivity.PortalUrl) 'WARN'
+                }
+
+                if (-not [string]::IsNullOrWhiteSpace($Config.Behavior.OnConnectCommand)) {
+                    Write-Log ("执行 Portal/连接后命令（{0}）" -f $connectivity.Detail)
+                    Invoke-OnConnectCommand -Config $Config -Net $network -PortalUrl $connectivity.PortalUrl
+                    if ($Config.Behavior.PostConnectDelaySec -gt 0) {
+                        Start-Sleep -Seconds $Config.Behavior.PostConnectDelaySec
+                    }
+                    $connectivity = Test-Connectivity -Config $Config
+                }
+
+                if (-not $connectivity.Internet) {
+                    $State.failures[$network.Ssid] = Get-Date
+                    if ($connectivity.CaptivePortal) {
+                        Write-Log ("{0} 仍需要网页认证（{1}），按失败处理，继续尝试下一优先级" -f $network.Ssid, $connectivity.PortalUrl) 'WARN'
+                    } else {
+                        Write-Log ("{0} 外网不可用（{1}），继续尝试下一优先级" -f $network.Ssid, $connectivity.Detail) 'WARN'
+                    }
+                    continue
+                }
+                Write-Log '外网连通性检查：通过'
+            } elseif (-not [string]::IsNullOrWhiteSpace($Config.Behavior.OnConnectCommand)) {
+                Invoke-OnConnectCommand -Config $Config -Net $network
+            }
+
             $State.lastApplied = [ordered]@{
                 ssid    = $network.Ssid
                 profile = $network.Profile
@@ -966,18 +1135,6 @@ function Invoke-ConnectCandidates {
             if ($State.failures.ContainsKey($network.Ssid)) { $State.failures.Remove($network.Ssid) }
             $State.bestStreak = $null
             Write-Log ("已连接到 $($network.Ssid)（优先级 $($network.Priority)）")
-
-            if ($Config.Behavior.PostConnectDelaySec -gt 0) {
-                Start-Sleep -Seconds $Config.Behavior.PostConnectDelaySec
-            }
-            if ($Config.Behavior.VerifyInternet) {
-                if (Test-Internet -Config $Config) {
-                    Write-Log '外网连通性检查：通过'
-                } else {
-                    Write-Log '外网连通性检查：未通过（可能还需要 Portal 认证）' 'WARN'
-                }
-            }
-            Invoke-OnConnectCommand -Config $Config -Net $network
             return $true
         }
 
@@ -988,7 +1145,7 @@ function Invoke-ConnectCandidates {
     # 如果原来有可用连接，尽量恢复，避免“抢网失败反而断网”
     if ($Current.Connected) {
         $nowState = Get-WifiState -InterfaceName $interfaceName
-        if (-not $nowState.Connected) {
+        if (-not $nowState.Connected -or $nowState.Ssid -ne $Current.Ssid) {
             Write-Log ("所有候选都失败，尝试恢复原连接 $($Current.Ssid)") 'WARN'
             $temporary = [pscustomobject]@{
                 Ssid    = $Current.Ssid
@@ -1068,8 +1225,34 @@ function Invoke-Cycle {
         }
 
         $visible = @(Get-VisibleNetworks)
+
+        $currentConnectivity = $null
+        if ($config.Behavior.VerifyInternet -and $current.Connected) {
+            $currentConnectivity = Test-Connectivity -Config $config
+            if (-not $currentConnectivity.Internet) {
+                Write-Log ("当前连接外网不可用（{0}）" -f $currentConnectivity.Detail) 'WARN'
+                if (-not [string]::IsNullOrWhiteSpace($config.Behavior.OnConnectCommand)) {
+                    $currentNet = $null
+                    foreach ($network in $config.Networks) {
+                        if ($network.Ssid -eq $current.Ssid) { $currentNet = $network; break }
+                    }
+                    if ($currentNet) {
+                        Invoke-OnConnectCommand -Config $config -Net $currentNet -PortalUrl $currentConnectivity.PortalUrl
+                        if ($config.Behavior.PostConnectDelaySec -gt 0) {
+                            Start-Sleep -Seconds $config.Behavior.PostConnectDelaySec
+                        }
+                        $currentConnectivity = Test-Connectivity -Config $config
+                    }
+                }
+                if ($currentConnectivity.CaptivePortal) {
+                    Write-Log ("当前连接仍需网页认证：{0}" -f $currentConnectivity.PortalUrl) 'WARN'
+                }
+            }
+        }
+        $currentInternet = if ($null -ne $currentConnectivity) { $currentConnectivity.Internet } else { $null }
+
         $plan = Get-NetworkPlan -Config $config -State $state -Current $current `
-            -VisibleNetworks $visible -Now $now -IgnoreSchedule:$ForceRun
+            -VisibleNetworks $visible -Now $now -IgnoreSchedule:$ForceRun -CurrentInternet $currentInternet
 
         $currentText = if ($current.Connected) {
             '{0}（信号 {1}%，模式 {2}）' -f $current.Ssid, $current.Signal, $current.Mode
@@ -1117,6 +1300,8 @@ function Get-ReasonText {
         'manual-grace' { return '手动连接保护期' }
         'no-candidate' { return '没有可用候选' }
         'already-best' { return '已是最优网络' }
+        'portal-fallback' { return '网页认证失败，降级' }
+        'portal-only' { return '需要网页认证，无其他候选' }
         'unknown-network' { return '当前为非列表网络' }
         'preempt-disabled' { return '保持当前连接' }
         'waiting' { return '等待确认更高优先级' }
@@ -1342,14 +1527,32 @@ function Invoke-ManualConnect {
         Write-Host ("已连接到 {0}。" -f $network.Ssid) -ForegroundColor Green
 
         if ($config.Behavior.PostConnectDelaySec -gt 0) { Start-Sleep -Seconds $config.Behavior.PostConnectDelaySec }
+
+        $connectivity = $null
         if ($config.Behavior.VerifyInternet) {
-            if (Test-Internet -Config $config) {
-                Write-Host '外网连通性检查：通过' -ForegroundColor Green
-            } else {
-                Write-Host '外网连通性检查：未通过（可能还需要 Portal 认证）' -ForegroundColor Yellow
+            $connectivity = Test-Connectivity -Config $config
+            if ($connectivity.CaptivePortal) {
+                Write-Host ("检测到网页认证：{0}" -f $connectivity.PortalUrl) -ForegroundColor Yellow
             }
         }
-        Invoke-OnConnectCommand -Config $config -Net $network
+
+        if (-not [string]::IsNullOrWhiteSpace($config.Behavior.OnConnectCommand)) {
+            Invoke-OnConnectCommand -Config $config -Net $network -PortalUrl $(if ($null -ne $connectivity) { $connectivity.PortalUrl } else { '' })
+            if ($config.Behavior.PostConnectDelaySec -gt 0) { Start-Sleep -Seconds $config.Behavior.PostConnectDelaySec }
+            if ($config.Behavior.VerifyInternet) {
+                $connectivity = Test-Connectivity -Config $config
+            }
+        }
+
+        if ($config.Behavior.VerifyInternet) {
+            if ($connectivity.Internet) {
+                Write-Host '外网连通性检查：通过' -ForegroundColor Green
+            } elseif ($connectivity.CaptivePortal) {
+                Write-Host ("外网仍需要网页认证：{0}" -f $connectivity.PortalUrl) -ForegroundColor Yellow
+            } else {
+                Write-Host ("外网连通性检查：未通过（{0}）" -f $connectivity.Detail) -ForegroundColor Yellow
+            }
+        }
         return 0
     } catch {
         Write-Host ('连接失败：{0}' -f $_.Exception.Message) -ForegroundColor Red
@@ -1458,6 +1661,7 @@ function Write-Snapshot {
         adapter     = [ordered]@{ found = $false; name = ''; connected = $false; ssid = ''; profile = ''; signal = 0; mode = ''; state = '' }
         schedule    = [ordered]@{ enabled = $false; active = $false; text = ''; currentEnd = $null; nextStart = $null }
         plan        = [ordered]@{ action = 'none'; reason = ''; message = ''; target = ''; candidates = @() }
+        connectivity = [ordered]@{ checked = $false; internet = $null; captivePortal = $false; portalUrl = ''; detail = '' }
         networks    = @()
         visible     = @()
         profiles    = @()
@@ -1470,8 +1674,21 @@ function Write-Snapshot {
         $visible = @()
         if ($current.Found) { $visible = @(Get-VisibleNetworks) }
 
+        $connectivity = $null
+        if ($config.Behavior.VerifyInternet -and $current.Connected) {
+            $connectivity = Test-Connectivity -Config $config
+            $data.connectivity = [ordered]@{
+                checked       = $true
+                internet      = [bool]$connectivity.Internet
+                captivePortal = [bool]$connectivity.CaptivePortal
+                portalUrl     = [string]$connectivity.PortalUrl
+                detail        = [string]$connectivity.Detail
+            }
+        }
+        $currentInternet = if ($null -ne $connectivity) { $connectivity.Internet } else { $null }
+
         $plan = Get-NetworkPlan -Config $config -State $state -Current $current `
-            -VisibleNetworks $visible -Now $now
+            -VisibleNetworks $visible -Now $now -CurrentInternet $currentInternet
         $scheduleInfo = Get-ScheduleInfo -Schedule $config.Schedule -Now $now
 
         $taskInstalled = $false

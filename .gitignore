@@ -1,6 +1,7 @@
 # 运行时生成的文件
 /config.json
 /config.json.bak
+/portal-login.ps1
 /state.json
 /ui-settings.json
 /run-hidden.vbs
@@ -17,6 +18,7 @@
 bin/
 obj/
 *.user
+*.lnk
 Thumbs.db
 desktop.ini
 .DS_Store

@@ -94,8 +94,8 @@ namespace WifiFallback
         private NumericUpDown _numInterval;
         private NumericUpDown _numPostDelay;
         private NumericUpDown _numLogDays;
-        private NumericUpDown _numVerifyPort;
-        private TextBox _txtVerifyHost;
+        private TextBox _txtVerifyUrl;
+        private TextBox _txtVerifyExpect;
         private TextBox _txtOnConnect;
 
         // 定时检测
@@ -569,6 +569,22 @@ namespace WifiFallback
             {
                 scheduleText = "手动连接保护到 " + FormatIso(snapshot.manualUntil, "HH:mm") + "  ·  " + scheduleText;
             }
+            ConnectivityInfo connectivity = snapshot.connectivity;
+            if (connectivity != null && connectivity.@checked && !connectivity.internet)
+            {
+                if (connectivity.captivePortal)
+                {
+                    _currentMeta.Text = _currentMeta.Text + "  ·  需要网页认证";
+                    if (!string.IsNullOrEmpty(connectivity.portalUrl))
+                    {
+                        scheduleText = "认证页：" + connectivity.portalUrl + "  ·  " + scheduleText;
+                    }
+                }
+                else
+                {
+                    _currentMeta.Text = _currentMeta.Text + "  ·  外网不可用";
+                }
+            }
             _decisionSchedule.Text = scheduleText;
 
             if (IsFuture(snapshot.pausedUntil))
@@ -626,6 +642,8 @@ namespace WifiFallback
                 case "already-best": return "已连接最高优先级";
                 case "waiting": return "等待确认更高优先级";
                 case "preempt": return "切换到更高优先级";
+                case "portal-fallback": return "网页认证失败，降级";
+                case "portal-only": return "需要网页认证，无其他候选";
                 case "fallback": return "断线兜底";
                 case "no-candidate": return "没有可用候选";
                 case "paused": return "已暂停";
@@ -1511,13 +1529,14 @@ namespace WifiFallback
                 SetNumeric(_numInterval, _config.behavior.taskIntervalMinutes);
                 SetNumeric(_numPostDelay, _config.behavior.postConnectDelaySec);
                 SetNumeric(_numLogDays, _config.behavior.logKeepDays);
-                SetNumeric(_numVerifyPort, _config.behavior.verifyPort);
+
 
                 _chkPreempt.Checked = _config.behavior.preempt;
                 _chkPreemptUnknown.Checked = _config.behavior.preemptUnknown;
                 _chkManual.Checked = _config.behavior.respectManualMode;
                 _chkVerify.Checked = _config.behavior.verifyInternet;
-                _txtVerifyHost.Text = _config.behavior.verifyHost;
+                _txtVerifyUrl.Text = _config.behavior.verifyUrl;
+                _txtVerifyExpect.Text = _config.behavior.verifyExpect;
                 _txtOnConnect.Text = _config.behavior.onConnectCommand;
 
                 RefreshNetworkList();
@@ -2048,8 +2067,8 @@ namespace WifiFallback
             _config.behavior.taskIntervalMinutes = (int)_numInterval.Value;
             _config.behavior.postConnectDelaySec = (int)_numPostDelay.Value;
             _config.behavior.logKeepDays = (int)_numLogDays.Value;
-            _config.behavior.verifyPort = (int)_numVerifyPort.Value;
-            _config.behavior.verifyHost = _txtVerifyHost.Text.Trim();
+            _config.behavior.verifyUrl = _txtVerifyUrl.Text.Trim();
+            _config.behavior.verifyExpect = _txtVerifyExpect.Text.Trim();
             _config.behavior.onConnectCommand = _txtOnConnect.Text;
             MarkDirty();
         }

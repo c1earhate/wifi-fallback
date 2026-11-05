@@ -92,6 +92,8 @@ namespace WifiFallback
         public int failedRetryMinutes { get; set; }
         public int maxAttemptsPerRun { get; set; }
         public bool verifyInternet { get; set; }
+        public string verifyUrl { get; set; }
+        public string verifyExpect { get; set; }
         public string verifyHost { get; set; }
         public int verifyPort { get; set; }
         public string onConnectCommand { get; set; }
@@ -110,6 +112,8 @@ namespace WifiFallback
             failedRetryMinutes = 3;
             maxAttemptsPerRun = 3;
             verifyInternet = false;
+            verifyUrl = "http://www.msftconnecttest.com/connecttest.txt";
+            verifyExpect = "Microsoft Connect Test";
             verifyHost = "223.5.5.5";
             verifyPort = 443;
             onConnectCommand = "";
@@ -137,6 +141,7 @@ namespace WifiFallback
         public AdapterInfo adapter { get; set; }
         public ScheduleInfo schedule { get; set; }
         public PlanInfo plan { get; set; }
+        public ConnectivityInfo connectivity { get; set; }
         public List<NetworkStatus> networks { get; set; }
         public List<VisibleInfo> visible { get; set; }
         public List<string> profiles { get; set; }
@@ -156,6 +161,7 @@ namespace WifiFallback
             adapter = new AdapterInfo();
             schedule = new ScheduleInfo();
             plan = new PlanInfo();
+            connectivity = new ConnectivityInfo();
             networks = new List<NetworkStatus>();
             visible = new List<VisibleInfo>();
             profiles = new List<string>();
@@ -215,6 +221,23 @@ namespace WifiFallback
         }
     }
 
+    public class ConnectivityInfo
+    {
+        public bool @checked { get; set; }
+        public bool internet { get; set; }
+        public bool captivePortal { get; set; }
+        public string portalUrl { get; set; }
+        public string detail { get; set; }
+
+        public ConnectivityInfo()
+        {
+            @checked = false;
+            internet = false;
+            captivePortal = false;
+            portalUrl = "";
+            detail = "";
+        }
+    }
     public class NetworkStatus
     {
         public string ssid { get; set; }
@@ -533,6 +556,14 @@ namespace WifiFallback
             if (behavior.taskIntervalMinutes > 15)
             {
                 behavior.taskIntervalMinutes = 15;
+            }
+            if (string.IsNullOrWhiteSpace(behavior.verifyUrl))
+            {
+                behavior.verifyUrl = "http://www.msftconnecttest.com/connecttest.txt";
+            }
+            if (behavior.verifyExpect == null)
+            {
+                behavior.verifyExpect = "Microsoft Connect Test";
             }
             if (behavior.verifyHost == null)
             {

@@ -90,8 +90,8 @@ function New-TestVisible {
 }
 
 function Invoke-Plan {
-    param($Config, $State, $Current, $Visible, [datetime]$Now, [switch]$IgnoreSchedule)
-    return Get-NetworkPlan -Config $Config -State $State -Current $Current -VisibleNetworks $Visible -Now $Now -IgnoreSchedule:$IgnoreSchedule
+    param($Config, $State, $Current, $Visible, [datetime]$Now, [switch]$IgnoreSchedule, $CurrentInternet = $null)
+    return Get-NetworkPlan -Config $Config -State $State -Current $Current -VisibleNetworks $Visible -Now $Now -IgnoreSchedule:$IgnoreSchedule -CurrentInternet $CurrentInternet
 }
 
 # 2026-11-02 是周一
@@ -159,6 +159,25 @@ $result = Invoke-Plan -Config $sundayOnly -State $state -Current (New-TestCurren
 Assert-Equal 'connect' $result.Action '周日 23:30 在窗口内'
 
 Write-Host ''
+Write-Host ''
+Write-Host '== Portal 认证导致的降级 ==' -ForegroundColor Cyan
+
+$portalConfig = New-TestConfig -Networks @(
+    (New-TestNetwork -Ssid 'A' -Priority 1),
+    (New-TestNetwork -Ssid 'B' -Priority 2)
+) -Windows @(New-TestWindow) -Overrides @{ VerifyInternet = $true }
+
+$state = New-DefaultState
+$result = Invoke-Plan -Config $portalConfig -State $state -Current (New-TestCurrent -Ssid 'B') `
+    -Visible @((New-TestVisible 'A' 70), (New-TestVisible 'B' 90)) -Now $mondayNoon -CurrentInternet $false -IgnoreSchedule
+Assert-Equal 'connect' $result.Action 'Portal 认证失败时执行切换'
+Assert-Equal 'portal-fallback' $result.Reason 'Portal 失败使用 portal-fallback'
+Assert-Equal 'A' $result.Target.Ssid 'Portal 失败时切到另一优先级'
+
+$state = New-DefaultState
+$result = Invoke-Plan -Config $portalConfig -State $state -Current (New-TestCurrent -Ssid 'A') `
+    -Visible @((New-TestVisible 'A' 90)) -Now $mondayNoon -CurrentInternet $false -IgnoreSchedule
+Assert-Equal 'portal-only' $result.Reason '只有当前网络需要认证时不反复切换'
 Write-Host '== 暂停 / 手动保护 ==' -ForegroundColor Cyan
 
 $state = New-DefaultState

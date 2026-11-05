@@ -50,6 +50,7 @@ Windows 自带的“自动连接”只能按已保存配置的顺序尝试，缺
 | `WifiFallback.ps1` | 主程序：状态、决策、连接、计划任务 |
 | `config.json` | 本地运行配置：WiFi 列表、优先级、时间窗口（已被 git 忽略） |
 | `config.example.json` | 示例配置，首次使用复制为 `config.json` |
+| `portal-login.example.ps1` | 校园网 Portal 登录模板，复制为 `portal-login.ps1` 后填写 |
 | `LICENSE` | MIT 许可证 |
 | `.github/workflows/build.yml` | GitHub Actions：编译 exe 并运行测试 |
 | `wifi.cmd` | 命令包装，方便输入 `.\wifi.cmd -Status` |
@@ -76,7 +77,7 @@ Windows 自带的“自动连接”只能按已保存配置的顺序尝试，缺
 Copy-Item .\config.example.json .\config.json
 ```
 
-也可以直接下载 [Releases](https://github.com/c1earhate/wifi-fallback/releases/latest) 里的 `WifiFallback-v1.0.0-win64.zip`，解压后双击 `WifiFallbackUI.exe`。
+也可以直接下载 [Releases](https://github.com/c1earhate/wifi-fallback/releases/latest) 里的 `WifiFallback-v1.0.1-win64.zip`，解压后双击 `WifiFallbackUI.exe`。
 
 程序需要和 `WifiFallback.ps1`、`config.json` 放在同一个目录。
 
@@ -84,7 +85,7 @@ Copy-Item .\config.example.json .\config.json
 
 - **总览**：当前连接、信号、时间窗口状态、本次决策；一键刷新、立即检查、暂停 1 小时、恢复、安装/卸载计划任务。
 - **WiFi 优先级**：添加、编辑、删除、上移、下移，勾选是否参与自动连接；添加时下拉框会列出扫描到的网络和系统已保存的配置。
-- **时间与行为**：编辑时间窗口和抢占、防抖、失败冷却、检查间隔等参数，以及连接成功后的 Portal 认证命令。
+- **时间与行为**：编辑时间窗口和抢占、防抖、失败冷却、检查间隔等参数，以及 Portal 认证命令。
 - **定时检测**：在指定时间执行一次“仅检测”或“检测并连接”；关闭窗口后托盘继续执行。
 - **运行日志**：查看最近日志、打开日志目录。
 
@@ -192,7 +193,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ".\WifiFallback.ps1" -Status
     "connectTimeoutSec": 15,
     "failedRetryMinutes": 3,
     "maxAttemptsPerRun": 3,
-    "onConnectCommand": "",
+    "verifyInternet": true,
+    "verifyUrl": "http://www.msftconnecttest.com/connecttest.txt",
+    "verifyExpect": "Microsoft Connect Test",
+    "onConnectCommand": "& '.\\portal-login.ps1'",
     "taskIntervalMinutes": 1
   }
 }
@@ -247,9 +251,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ".\WifiFallback.ps1" -Status
 | `postConnectDelaySec` | `4` | 连接成功后等待 DHCP/认证再执行命令 |
 | `failedRetryMinutes` | `3` | 连接失败后的冷却时间 |
 | `maxAttemptsPerRun` | `3` | 单次检查最多尝试几个候选 |
-| `verifyInternet` | `false` | 连接后是否做 TCP 连通性检查 |
-| `verifyHost` / `verifyPort` | `223.5.5.5` / `443` | 连通性检查目标 |
-| `onConnectCommand` | 空 | 连接成功后执行的 PowerShell 命令，见校园网 Portal 部分 |
+| `verifyInternet` | `false` | 关联后验证外网；失败会按失败处理并继续尝试下一优先级 |
+| `verifyUrl` | Microsoft 联网检测地址 | 用于判断是否真的联网；Portal 会返回登录页而不是期望内容 |
+| `verifyExpect` | `Microsoft Connect Test` | 响应中必须包含的文本；HTTP 204 也算成功 |
+| `verifyHost` / `verifyPort` | `223.5.5.5` / `443` | 旧版 TCP 检测参数，保留兼容，通常不需要改 |
+| `onConnectCommand` | 空 | 关联后、验证前执行的 PowerShell 命令，见校园网 Portal 部分 |
 | `logKeepDays` | `30` | 日志保留天数 |
 | `taskIntervalMinutes` | `1` | 计划任务检查间隔，修改后需要重新 `-InstallTask` |
 
@@ -269,26 +275,45 @@ netsh wlan show profiles
 
 `-InstallTask` 也会提示哪些 `profile` 在系统里不存在。
 
-### 5.2 网页 Portal 认证
+### 5.2 网页 Portal 认证（重点）
 
-很多校园网连上 WiFi 后还要在网页上登录。可以配置 `onConnectCommand`，连接成功后自动执行：
+很多校园网连上 WiFi 后还要在网页上登录。**“SSID 已关联”不等于“能上网”**：Portal 网络会关联成功，但所有 HTTP 请求被劫持到登录页，Windows 还会自动打开认证界面。旧逻辑如果只看 SSID，就会误判为切换成功，停在认证页不再降级。
+
+打开 `verifyInternet` 后，引擎会：
+
+1. 关联 WiFi 后请求 `verifyUrl`，检查是否返回期望内容；
+2. 如果返回登录页、重定向或内容不匹配，判定为 **Captive Portal**，并尽量提取认证页地址；
+3. 如果配置了 `onConnectCommand`，执行认证命令，然后再验证一次；
+4. 仍然没有外网 → 按失败处理，继续尝试下一优先级；全部失败会记录日志并尽量恢复原连接。
+
+推荐配置：
 
 ```json
-"onConnectCommand": "Invoke-WebRequest -UseBasicParsing -Uri 'http://10.0.0.1/login?user=学号&pass=密码' | Out-Null"
+"verifyInternet": true,
+"verifyUrl": "http://www.msftconnecttest.com/connecttest.txt",
+"verifyExpect": "Microsoft Connect Test",
+"onConnectCommand": "& '.\\portal-login.ps1'"
 ```
 
-命令里可以使用环境变量：
+认证命令可以读取环境变量：
 
 - `$env:WIFI_SSID`：刚连上的 SSID
 - `$env:WIFI_PROFILE`：配置文件名称
+- `$env:WIFI_PORTAL_URL`：检测到的认证页地址（可能为空）
 
-建议把认证逻辑写成单独的 `portal-login.ps1`，这里只调用：
+仓库里的 [`portal-login.example.ps1`](portal-login.example.ps1) 是一个模板。使用方法：
 
-```json
-"onConnectCommand": "& 'D:\\1\\WifiFallback\\portal-login.ps1'"
-```
+1. 复制为 `portal-login.ps1`；
+2. 手动连接校园网，打开认证页；
+3. 浏览器按 F12 → Network，提交一次登录，找到真正的登录 POST 请求；
+4. 把 URL、表单字段、必要的 header 填进脚本；
+5. 在“时间与行为”页把 `onConnectCommand` 指向这个脚本。
 
-注意：把密码写进配置是明文；更安全的做法是让脚本从 Windows 凭据管理器读取。
+Windows 仍然可能自动弹出认证页，工具无法阻止这个系统行为；但工具会在后台尝试认证、验证，失败后继续降级，不会一直停在认证页。
+
+如果不配置 `onConnectCommand`，开启 `verifyInternet` 后也会把 Portal 网络判为失败并尝试下一优先级；如果所有候选都需要认证，界面和日志会显示“需要网页认证，无其他候选”。
+
+注意：把密码写进配置或脚本是明文；更安全的做法是让脚本从 Windows 凭据管理器读取。
 
 ### 5.3 隐藏 SSID
 
@@ -358,6 +383,15 @@ Windows 本身有两个相关能力：
 **Q：定时检测和“安装计划任务”有什么区别？**
 定时检测是桌面版的附加功能，只在 `WifiFallbackUI.exe` 运行时生效（包括隐藏在托盘时）；计划任务由 Windows 调度，退出桌面版后仍然执行，并且按 config 的时间窗口持续兜底。两者可以同时使用。
 
+**Q：到时间只打开了校园网认证页，没有自动切换？**
+先确认计划任务是否真的安装了：
+
+```powershell
+Get-ScheduledTask -TaskName WifiFallback
+```
+
+本工具不会自动安装计划任务。其次确认 `verifyInternet` 已打开：Portal 网络“SSID 已关联”不等于“能上网”，关闭验证时引擎会误判成功并停在认证页。打开验证后，没有配置 `onConnectCommand` 或认证失败时，会把该网络判为失败并尝试下一优先级；所有候选都失败时显示 `portal-only`，不会反复假装成功。
+
 **Q：计划任务显示运行成功，但没有切换？**
 先看日志。最常见原因是“不在窗口内”或“已经是最优网络”。用 `-Plan` 可以看到忽略窗口后的决策。
 
@@ -395,12 +429,13 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 - 断开 WiFi 后 Windows 自动连到优先级 2 的 `ZstuStudentWeb`；
 - 工具下一次检查发现 `ZstuWlan` 可见，第一次记录“确认中（1/2）”，第二次成功切换到 `ZstuWlan`；
 - `netsh wlan connect` 返回成功，约 1 秒完成关联，日志记录完整；
-- 计划任务以隐藏窗口运行，日志正常写入，任务结果 `0x0`；
+- 计划任务以隐藏窗口运行，日志正常写入，任务结果 `0x0`；2026-11-06 00:18 重新安装后，00:18:52 已在窗口内运行并记录 `already-best`；
 - 桌面版可以读取状态、保存配置、暂停/恢复、安装/卸载计划任务；安装后任务状态和运行日志都能在界面里看到；
 - 点击窗口关闭按钮后进程留在托盘，窗口隐藏；再次双击 exe 或托盘图标可以恢复；托盘菜单可退出；
 - 定时检测在 11:51 执行“仅检测”，写入 `logs\ui-timed.log`，界面显示上次执行和下次执行；另一次“检测并连接”在 11:55 触发引擎强制检查（already-best），UI 日志和引擎日志都有记录；
 - 关闭窗口隐藏到托盘后，定时检测仍按时执行（实测窗口不可见状态下 11:58 触发并写入日志）；
-- 30 项决策/时间窗口/冷却/隐藏网络测试全部通过。
+- 用 `example.com` 模拟 Portal 场景，`Test-Connectivity` 能识别 `captivePortal=True` 并提取认证页地址；`portal-fallback`/`portal-only` 单测通过；
+- 34 项决策/时间窗口/冷却/隐藏网络/Portal 降级测试全部通过。
 
 隐藏窗口、无控制台环境下 `netsh` 的输出编码和交互式控制台不同。脚本现在直接读取 `netsh` 的原始字节，先按 UTF-8 解码，失败再回退到系统 ANSI 代码页，避免中文系统下出现“找不到无线网卡”。
 
@@ -414,7 +449,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 - 桌面版保存配置时会保留 `_说明` 并生成 `config.json.bak` 备份；写入格式是格式化的 JSON（days 会写成数字 1–7，引擎同样支持）。
 - 桌面版未做代码签名，SmartScreen 可能会在首次运行时提示；确认文件来源后选择“仍要运行”即可。
 - 校园网 Portal 认证的账号密码如果写进 `onConnectCommand`，会以明文保存在 `config.json`，请自行评估。
-- 本工具只负责“连哪个 WiFi”，不负责 Portal 认证、DNS、代理等上层网络配置。
+- 本工具提供 Portal 认证钩子（`onConnectCommand`），但具体认证请求需要按学校网络填写；它不负责 DNS、代理等上层网络配置。
 
 ---
 
@@ -422,5 +457,5 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 - 桌面版构建：`powershell -ExecutionPolicy Bypass -File .\build.ps1`（Windows 自带 .NET Framework 4.x 的 `csc.exe`）。
 - 引擎测试：`powershell -ExecutionPolicy Bypass -File .\tests\WifiFallback.Tests.ps1`。
-- GitHub Actions 会在每次 push / PR 时编译 `WifiFallbackUI.exe`、运行 30 项测试并上传构建产物。
+- GitHub Actions 会在每次 push / PR 时编译 `WifiFallbackUI.exe`、运行 34 项测试并上传构建产物。
 - 许可证：[MIT](LICENSE)。欢迎提 Issue 或 PR。

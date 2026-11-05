@@ -864,41 +864,57 @@ namespace WifiFallback
             _numPostDelay = AddNumericRow(grid, "连接后等待（秒）", 0, 60, row++);
             _numLogDays = AddNumericRow(grid, "日志保留（天）", 1, 365, row++);
 
-            _chkVerify = MakeCheckBox("连接后检查外网连通性");
+            _chkVerify = MakeCheckBox("连接后验证外网（失败则继续降级）");
             _chkVerify.CheckedChanged += OnBehaviorChanged;
             grid.Controls.Add(_chkVerify, 0, row);
             grid.SetColumnSpan(_chkVerify, 2);
             row++;
 
-            Panel verifyPanel = new Panel();
-            verifyPanel.Height = 30;
-            verifyPanel.Dock = DockStyle.Fill;
-            Label hostLabel = new Label();
-            hostLabel.Text = "目标";
-            hostLabel.AutoSize = true;
-            hostLabel.SetBounds(0, 6, 36, 20);
-            verifyPanel.Controls.Add(hostLabel);
+            Panel verifyUrlPanel = new Panel();
+            verifyUrlPanel.Height = 50;
+            verifyUrlPanel.Dock = DockStyle.Fill;
+            Label urlLabel = new Label();
+            urlLabel.Text = "检测 URL";
+            urlLabel.AutoSize = true;
+            urlLabel.SetBounds(0, 2, 100, 18);
+            verifyUrlPanel.Controls.Add(urlLabel);
 
-            _txtVerifyHost = new TextBox();
-            _txtVerifyHost.SetBounds(38, 3, 150, 24);
-            _txtVerifyHost.TextChanged += OnBehaviorChanged;
-            verifyPanel.Controls.Add(_txtVerifyHost);
+            _txtVerifyUrl = new TextBox();
+            _txtVerifyUrl.SetBounds(0, 22, 390, 24);
+            _txtVerifyUrl.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+            _txtVerifyUrl.TextChanged += OnBehaviorChanged;
+            verifyUrlPanel.Controls.Add(_txtVerifyUrl);
+            _toolTip.SetToolTip(_txtVerifyUrl, "默认使用 Microsoft 的联网检测地址。校园网 Portal 会返回登录页而不是期望内容。");
 
-            Label portLabel = new Label();
-            portLabel.Text = "端口";
-            portLabel.AutoSize = true;
-            portLabel.SetBounds(200, 6, 38, 20);
-            verifyPanel.Controls.Add(portLabel);
+            grid.Controls.Add(verifyUrlPanel, 0, row);
+            grid.SetColumnSpan(verifyUrlPanel, 2);
+            row++;
 
-            _numVerifyPort = new NumericUpDown();
-            _numVerifyPort.SetBounds(242, 3, 70, 24);
-            _numVerifyPort.Minimum = 1;
-            _numVerifyPort.Maximum = 65535;
-            _numVerifyPort.ValueChanged += OnBehaviorChanged;
-            verifyPanel.Controls.Add(_numVerifyPort);
+            Panel verifyExpectPanel = new Panel();
+            verifyExpectPanel.Height = 48;
+            verifyExpectPanel.Dock = DockStyle.Fill;
+            Label expectLabel = new Label();
+            expectLabel.Text = "期望内容";
+            expectLabel.AutoSize = true;
+            expectLabel.SetBounds(0, 2, 100, 18);
+            verifyExpectPanel.Controls.Add(expectLabel);
 
-            grid.Controls.Add(verifyPanel, 0, row);
-            grid.SetColumnSpan(verifyPanel, 2);
+            _txtVerifyExpect = new TextBox();
+            _txtVerifyExpect.SetBounds(0, 22, 240, 24);
+            _txtVerifyExpect.TextChanged += OnBehaviorChanged;
+            verifyExpectPanel.Controls.Add(_txtVerifyExpect);
+
+            Label expectHint = new Label();
+            expectHint.Text = "HTTP 200 且内容匹配";
+            expectHint.Font = new Font("Microsoft YaHei UI", 8F);
+            expectHint.ForeColor = TextSecondary;
+            expectHint.AutoSize = true;
+            expectHint.SetBounds(250, 25, 160, 18);
+            verifyExpectPanel.Controls.Add(expectHint);
+            _toolTip.SetToolTip(_txtVerifyExpect, "默认 Microsoft Connect Test；如果内容不匹配，视为 Portal/未联网。");
+
+            grid.Controls.Add(verifyExpectPanel, 0, row);
+            grid.SetColumnSpan(verifyExpectPanel, 2);
             row++;
 
             Label commandLabel = new Label();

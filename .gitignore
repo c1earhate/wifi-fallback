@@ -1,0 +1,22 @@
+# 运行时生成的文件
+/config.json
+/config.json.bak
+/state.json
+/ui-settings.json
+/run-hidden.vbs
+/logs/
+*.tmp
+
+# 构建产物
+/WifiFallbackUI.exe
+/WifiFallbackUI.pdb
+/dist/
+
+# 编辑器 / 系统
+.vs/
+bin/
+obj/
+*.user
+Thumbs.db
+desktop.ini
+.DS_Store

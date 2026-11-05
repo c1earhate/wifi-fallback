@@ -1,0 +1,71 @@
+{
+  "_说明": [
+    "这是示例配置。第一次使用请复制为 config.json 后再修改。",
+    "networks 按 priority 从小到大连接，数字越小优先级越高。",
+    "profile 一般与 ssid 相同；只有配置文件名称和 SSID 不一致时才需要单独写。",
+    "enabled=false 的条目只是示例，不会参与连接。",
+    "schedule.windows 的 days 表示窗口“开始”的那一天；start > end 表示跨到第二天。"
+  ],
+  "interface": "",
+  "networks": [
+    {
+      "ssid": "CampusWiFi",
+      "profile": "CampusWiFi",
+      "priority": 1,
+      "enabled": true,
+      "minSignal": 0,
+      "allowHidden": false
+    },
+    {
+      "ssid": "CampusWiFi-2",
+      "profile": "CampusWiFi-2",
+      "priority": 2,
+      "enabled": true,
+      "minSignal": 0,
+      "allowHidden": false
+    },
+    {
+      "ssid": "HomeWiFi-5G",
+      "profile": "HomeWiFi-5G",
+      "priority": 3,
+      "enabled": false,
+      "minSignal": 20,
+      "allowHidden": false
+    },
+    {
+      "ssid": "HomeWiFi-2.4G",
+      "profile": "HomeWiFi-2.4G",
+      "priority": 4,
+      "enabled": false,
+      "minSignal": 15,
+      "allowHidden": false
+    }
+  ],
+  "schedule": {
+    "enabled": true,
+    "windows": [
+      {
+        "days": [1, 2, 3, 4, 5, 6, 7],
+        "start": "23:00",
+        "end": "07:00"
+      }
+    ]
+  },
+  "behavior": {
+    "preempt": true,
+    "preemptUnknown": true,
+    "preemptDelayChecks": 2,
+    "respectManualMode": true,
+    "manualGraceMinutes": 30,
+    "connectTimeoutSec": 15,
+    "postConnectDelaySec": 4,
+    "failedRetryMinutes": 3,
+    "maxAttemptsPerRun": 3,
+    "verifyInternet": false,
+    "verifyHost": "223.5.5.5",
+    "verifyPort": 443,
+    "onConnectCommand": "",
+    "logKeepDays": 30,
+    "taskIntervalMinutes": 1
+  }
+}

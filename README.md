@@ -4,6 +4,8 @@
 
 仓库地址：<https://github.com/c1earhate/wifi-fallback>
 
+下载：<https://github.com/c1earhate/wifi-fallback/releases/latest>
+
 在 Windows 11 / Windows 10 上，用系统自带的 `netsh` + 计划任务实现：
 
 - 配置多个 WiFi，按优先级从高到低连接；
@@ -21,7 +23,7 @@
 
 | 文件 | 作用 |
 | --- | --- |
-| `WifiFallbackUI.exe` | 桌面版图形界面，双击运行，不需要命令行 |
+| `WifiFallbackUI.exe` | 桌面版图形界面（构建产物；可直接下载 Releases 里的 zip） |
 | `WifiFallback.ps1` | 主程序：状态、决策、连接、计划任务 |
 | `config.json` | 本地运行配置：WiFi 列表、优先级、时间窗口（已被 git 忽略） |
 | `config.example.json` | 示例配置，首次使用复制为 `config.json` |
@@ -51,7 +53,9 @@
 Copy-Item .\config.example.json .\config.json
 ```
 
-双击 `WifiFallbackUI.exe`。程序需要和 `WifiFallback.ps1`、`config.json` 放在同一个目录。
+也可以直接下载 [Releases](https://github.com/c1earhate/wifi-fallback/releases/latest) 里的 `WifiFallback-v1.0.0-win64.zip`，解压后双击 `WifiFallbackUI.exe`。
+
+程序需要和 `WifiFallback.ps1`、`config.json` 放在同一个目录。
 
 ![总览](docs/screenshot-overview.png)
 
